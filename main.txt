@@ -1,0 +1,771 @@
+using System;
+using cAlgo.API;
+using System.Linq;
+using System.Threading;
+using cAlgo.Indicators;
+using cAlgo.API.Internals;
+using cAlgo.API.Indicators;
+using System.Collections.Concurrent;
+
+namespace cAlgo
+{
+    [Indicator(IsOverlay = true, AccessRights = AccessRights.None)]
+    public class SyncVariable : Indicator
+    {
+        // A concurrent dictionary to store indicator instances
+        private static readonly ConcurrentDictionary<string, SyncVariable> _indicatorInstances = new ConcurrentDictionary<string, SyncVariable>();
+        private string _chartKey;
+        public int IsInSync;
+
+        [Parameter("Risk %", DefaultValue = 0.34)]
+        public double RP { get; set; }
+        [Parameter("Max_lot", DefaultValue = 7, MinValue = 0.01)]
+        public double Mx { get; set; }
+        [Parameter("Dashboard", DefaultValue = true)]
+        public bool Dash { get; set; }
+        
+        private ChartHorizontalLine Priceline;
+        private ChartHorizontalLine Stopline;
+        private ChartHorizontalLine Targetline;
+        private ChartHorizontalLine L1;
+        private ChartHorizontalLine L2;
+        private ChartStaticText DashT;
+        private ChartStaticText DashD;
+        private ChartText Sec;
+        
+
+        private double price;
+        private static double Entry = 0;
+        private static double stop = 0;
+        private static double target = 0;
+        private static double LL1 = 0;
+        private static double LL2 = 0;
+        private double Ac_s;
+        private string Dstring = "";
+        private double Last_balance;
+        private bool soundPlayed = false;
+        private double AlertY = 0;
+        private static bool GRR = false;
+        private bool RR = false;
+        private int secc;
+        //private bool soundPlayed = false;
+
+
+
+        protected override void Initialize()
+        {
+
+            Timer.TimerTick += OnTimerTick;
+            Timer.Start(1);
+
+            Chart.MouseDown += OnChartMouseDown;
+            Chart.MouseMove += ChartOnMouseMove;
+            Ac_s = AC();
+            Last_balance = Ac_s*100;
+
+            Chart.AddHotkey(Drawprice, Key.D1, ModifierKeys.None);
+            Chart.AddHotkey(Drawprice, Key.NumPad1, ModifierKeys.None);
+            Chart.AddHotkey(Drawstop, Key.D2, ModifierKeys.None);
+            Chart.AddHotkey(Drawstop, Key.NumPad2, ModifierKeys.None);
+            Chart.AddHotkey(Drawtarget, Key.D3, ModifierKeys.None);
+            Chart.AddHotkey(Drawtarget, Key.NumPad3, ModifierKeys.None);
+            Chart.AddHotkey(Order, Key.Space, ModifierKeys.None);
+            Chart.AddHotkey(Order, Key.NumPad0, ModifierKeys.None);
+            Chart.AddHotkey(Removeobject, Key.R, ModifierKeys.None);
+            Chart.AddHotkey(Removeobject, Key.NumPad7, ModifierKeys.None);
+            Chart.AddHotkey(Line_color_Change, Key.NumPad5, ModifierKeys.None);
+            Chart.AddHotkey(Line_color_Change, Key.D5, ModifierKeys.None);
+            Chart.AddHotkey(RemoveLobject, Key.T, ModifierKeys.None);
+            Chart.AddHotkey(RemoveLobject, Key.NumPad9, ModifierKeys.None);
+
+
+            AddDrawingHotkeys();
+
+
+
+            //Lines create
+
+            Priceline = Chart.DrawHorizontalLine($"Price", 0, Color.Blue);
+            Stopline = Chart.DrawHorizontalLine($"Stop", 0, Color.Red);
+            Targetline = Chart.DrawHorizontalLine($"Target", 0, Color.Green);
+            L2 = Chart.DrawHorizontalLine($"l2", 0, Color.OrangeRed);
+            L1 = Chart.DrawHorizontalLine($"l1", 0, Color.DeepSkyBlue);
+
+            //Priceline.IsInteractive=true; Stopline.IsInteractive=true; Targetline.IsInteractive=true;
+
+            // sync data
+            _chartKey = string.Format("{0}_{1}", SymbolName, TimeFrame);
+            // Register this instance in the dictionary
+            _indicatorInstances.AddOrUpdate(_chartKey, this, (key, value) => this);
+
+            DashT = Chart.DrawStaticText("Dashboard", "", VerticalAlignment.Top, HorizontalAlignment.Left, Color.Gray);
+            DashD = Chart.DrawStaticText("Daily", "", VerticalAlignment.Top, HorizontalAlignment.Left, Color.Gray);
+            Sec = Chart.DrawText("sc","",TimeInUtc,Symbol.Bid,Color.Gray);
+            
+            //RRButton = Chart.DrawRectangle("toggleButtonRect",Chart.XToTime(10), Chart.TopY ,Chart.XToTime(50),Chart.TopY-1, Color.Gray);
+            //O_ok = Chart.DrawEllipse("Place_Order",Chart.XToTime(30), Chart.TopY ,Chart.XToTime(60),Chart.TopY-1, Color.Gray);
+
+        }
+
+        private void SyncVariableAcrossCharts()  //sync data voids
+        {
+            var indicators = _indicatorInstances.Values.ToList();
+
+            foreach (var indicator in indicators)
+            {
+                try
+                {
+                    // Prevent circular sync loops
+                    Interlocked.Exchange(ref indicator.IsInSync, 1);
+
+                    // Sync variable value across all charts
+                    indicator.BeginInvokeOnMainThread(() => indicator.UpdateGlobalVariable());
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref indicator.IsInSync, 0);
+                }
+            }
+        }
+
+        private void UpdateGlobalVariable()
+        {
+            //if(Entry > 0){ if (Priceline != null) {Priceline.Y=Entry;} }
+            if (Priceline != null) { Priceline.Y = Entry; }
+            //if(stop > 0) { if (Stopline != null) {Stopline.Y=stop;} }
+            if (Stopline != null) { Stopline.Y = stop; }
+            //if(target > 0){ if (Targetline != null) {Targetline.Y=target;} }
+            if (Targetline != null) { Targetline.Y = target; }
+            if (L1 != null) { L1.Y = LL1; }
+            if (L2 != null) { L2.Y = LL2; }
+            GRR=RR;
+            
+            
+
+        }
+
+        private void AddDrawingHotkeys()
+        {
+            Chart.AddHotkey(() => Draw(ChartObjectType.Rectangle), Key.Q, ModifierKeys.None);
+            Chart.AddHotkey(() => Draw(ChartObjectType.TrendLine), Key.W, ModifierKeys.None);
+            Chart.AddHotkey(() => Draw(ChartObjectType.FibonacciRetracement), Key.A, ModifierKeys.None);
+            Chart.AddHotkey(() => Draw(ChartObjectType.Text), Key.S, ModifierKeys.None);
+            Chart.AddHotkey(() => Draw(ChartObjectType.Triangle), Key.E, ModifierKeys.None);
+            Chart.AddHotkey(() => DrawL1(), Key.D4, ModifierKeys.None);
+            Chart.AddHotkey(() => DrawL2(), Key.D6, ModifierKeys.None);
+            Chart.AddHotkey(() => DrawL1(), Key.NumPad4, ModifierKeys.None);
+            Chart.AddHotkey(() => DrawL2(), Key.NumPad6, ModifierKeys.None);
+            Chart.AddHotkey(() => Draw3line(), Key.D, ModifierKeys.None);
+            Chart.AddHotkey(() => Draw3line(), Key.NumPad8, ModifierKeys.None);
+            Chart.AddHotkey(() => SelectedObjSync(), Key.F, ModifierKeys.None);
+            
+            
+
+        }
+
+        private void DrawL1()
+        {
+            if (price > 0)
+            {
+                L1.Y = price;
+                LL1 = price;
+
+                if (IsInSync > 0) return;
+                SyncVariableAcrossCharts();
+            }
+
+        }
+        private void DrawL2()
+        {
+            if (price > 0)
+            {
+                L2.Y = price;
+                LL2 = price;
+
+                if (IsInSync > 0) return;
+                SyncVariableAcrossCharts();
+            }
+
+        }
+
+        private void Draw3line()
+        {
+            var barsToCover = new Lazy<int>(() => (Chart.LastVisibleBarIndex - Chart.FirstVisibleBarIndex) / 3);
+            Chart.DrawTrendLine("T_lin", Chart.FirstVisibleBarIndex + barsToCover.Value , Chart.BottomY + (Chart.TopY - Chart.BottomY) * 0.5, Chart.LastVisibleBarIndex - barsToCover.Value, Chart.BottomY + (Chart.TopY - Chart.BottomY) * 0.5, Color.Gray).IsInteractive = true;
+            Chart.DrawTrendLine("E_lin", Chart.FirstVisibleBarIndex + barsToCover.Value , Chart.BottomY + (Chart.TopY - Chart.BottomY) * 0.4, Chart.LastVisibleBarIndex - barsToCover.Value, Chart.BottomY + (Chart.TopY - Chart.BottomY) * 0.4, Color.Gray).IsInteractive = true;
+            Chart.DrawTrendLine("S_lin", Chart.FirstVisibleBarIndex + barsToCover.Value , Chart.BottomY + (Chart.TopY - Chart.BottomY) * 0.6, Chart.LastVisibleBarIndex - barsToCover.Value, Chart.BottomY + (Chart.TopY - Chart.BottomY) * 0.6, Color.Gray).IsInteractive = true;
+        }
+
+        private void Draw(ChartObjectType type)
+        {
+            ChartObject chartObject = null;
+
+            var _drawingColor = Color.Gray;
+
+            var barsToCover = new Lazy<int>(() => (Chart.LastVisibleBarIndex - Chart.FirstVisibleBarIndex) / 6);
+            var priceToCover = new Lazy<double>(() => (Chart.TopY - Chart.BottomY) / 3);
+
+            switch (type)
+            {
+                case ChartObjectType.Text:
+                    chartObject = Chart.DrawText(GetObjectName(type), "text", Chart.FirstVisibleBarIndex + barsToCover.Value * 4, Chart.BottomY + (Chart.TopY - Chart.BottomY) / 2, _drawingColor);
+                    break;
+
+                case ChartObjectType.TrendLine:
+                    chartObject = Chart.DrawTrendLine(GetObjectName(type), Chart.FirstVisibleBarIndex + barsToCover.Value * 4, Chart.BottomY + (Chart.TopY - Chart.BottomY) / 2, Chart.LastVisibleBarIndex - barsToCover.Value, Chart.BottomY + (Chart.TopY - Chart.BottomY) / 2, _drawingColor);
+                    break;
+
+                case ChartObjectType.Triangle:
+                    chartObject = Chart.DrawTrendLine(GetObjectName(type), Chart.FirstVisibleBarIndex + barsToCover.Value * 4, Chart.BottomY + (Chart.TopY - Chart.BottomY) / 2, Chart.LastVisibleBarIndex - barsToCover.Value, Chart.BottomY + (Chart.TopY - Chart.BottomY) / 2, Color.Blue);
+                    break;
+
+                case ChartObjectType.Rectangle:
+                    chartObject = Chart.DrawRectangle(GetObjectName(type), Chart.FirstVisibleBarIndex + barsToCover.Value * 4, Chart.BottomY + priceToCover.Value, Chart.LastVisibleBarIndex - barsToCover.Value, Chart.TopY - priceToCover.Value, _drawingColor);
+                    break;
+
+                case ChartObjectType.FibonacciRetracement:
+                    var fib = Chart.DrawFibonacciRetracement(GetObjectName(type), Chart.FirstVisibleBarIndex + barsToCover.Value * 4, Chart.BottomY + priceToCover.Value, Chart.LastVisibleBarIndex - barsToCover.Value, Chart.TopY - priceToCover.Value, _drawingColor);
+                    var levels = new[] { 0, 25, 50, 75, 70.5, 78.9, 100, 115, 150, 150, 200, -100, 125 };
+                    for (int i = 0; i < fib.FibonacciLevels.Count && i < levels.Length; i++)
+                    {
+                        fib.FibonacciLevels[i].PercentLevel = levels[i];
+                    }
+                    chartObject = fib;
+                    break;
+
+            }
+
+            if (chartObject != null)
+            {
+                chartObject.IsInteractive = true;               
+            }
+        }
+
+        private string GetObjectName(ChartObjectType type)
+        {
+            return string.Format("{0}_{1}_{2}", "A", type, DateTimeOffset.Now.Ticks);
+        }
+
+
+        private double p_stop = 0;
+        private double p_entry = 0;
+        private double p_target = 0;
+        private void OnTimerTick()
+        {
+            
+            if (Chart.TimeFrame == TimeFrame.Minute)
+            {
+                secc = 59 - Server.Time.Second;
+                if (stop > 0) { if (secc == 5) { Notifications.PlaySound(@"C:\Users\A\Documents\cAlgo\Sounds\flash.wav"); } }
+                var ind = Server.TimeInUtc.AddHours(+5).AddMinutes(30);
+                if (Chart.TimeFrame == TimeFrame.Minute)
+                {
+                    Chart.DrawStaticText("Clock", Server.TimeInUtc.ToString("HH:MM"), VerticalAlignment.Bottom, HorizontalAlignment.Right, Color.Gray);
+                
+                    
+                }
+            }
+
+            var tl = Chart.FindAllObjects(ChartObjectType.TrendLine).Cast<ChartTrendLine>().LastOrDefault(t => t.Name.StartsWith("A_Triangle") && t.Y1 == t.Y2);
+            if (tl != null) { if (AlertY != tl.Y1) { AlertY = tl.Y1; soundPlayed = false; } } else { soundPlayed = false; AlertY = 0; }
+
+            if (Chart.FindObject("E_lin") != null) { Entry = Math.Round((Chart.FindObject("E_lin") as ChartTrendLine).Y1, Symbol.Digits); }
+            if (Chart.FindObject("T_lin") != null) { target = Math.Round((Chart.FindObject("T_lin") as ChartTrendLine).Y1, Symbol.Digits); }
+            if (Chart.FindObject("S_lin") != null) { stop = Math.Round((Chart.FindObject("S_lin") as ChartTrendLine).Y1, Symbol.Digits); }
+
+            if (stop > 0 && Chart.FindObject("S_lin") != null)
+            {
+                Priceline.Y = Entry; Stopline.Y = stop; Targetline.Y = target;
+
+                if (p_stop != stop && Chart.FindObject("S_lin") != null) { if (IsInSync > 0) return; SyncVariableAcrossCharts(); p_stop = stop;  }
+                if (p_entry != Entry && Chart.FindObject("S_lin") != null) { if (IsInSync > 0) return; SyncVariableAcrossCharts(); p_entry = Entry;  }
+                if (p_target != target && Chart.FindObject("S_lin") != null) { if (IsInSync > 0) return; SyncVariableAcrossCharts(); p_target = target;  }
+
+            }
+        //Print("RR Flag "+RR);
+        
+
+        }
+
+
+        private void Order()
+        {
+            if (stop != 0 && Entry != 0 && target != 0)
+            {
+                Limitorder(Entry, stop, target);
+                Removeobject();
+            }
+            else if (stop != 0 && Entry != 0 && target == 0)
+            {
+                Limitorder(Entry, stop, 0);
+                Removeobject();
+            }
+            else if (stop != 0 && Entry == 0 && target != 0)
+            {
+                Marketorder(stop, target);
+                Removeobject();
+            }
+            else if (stop != 0 && Entry == 0 && target == 0)
+            {
+                Marketorder(stop, 0);
+                Removeobject();
+            }
+            else { Removeobject(); }
+        }
+
+        private double AC()
+        {
+            double p = 0;
+            foreach (var trade in History)
+            {
+                p += trade.NetProfit;
+            }
+
+            return (Account.Balance - p) / 100;
+        }
+
+        private double Volum(double Sl)
+        {
+            int permitalbleLoss = (int)Math.Floor((Account.Balance * RP) / 100);
+            var volume = permitalbleLoss / Sl / Symbol.PipValue;
+            volume = Symbol.NormalizeVolumeInUnits(volume);
+            if (volume < Symbol.QuantityToVolumeInUnits(0.01)) volume = Symbol.QuantityToVolumeInUnits(0.01);
+            if (volume > Symbol.QuantityToVolumeInUnits(Mx)) volume = Symbol.QuantityToVolumeInUnits(Mx);
+            return volume;
+        }
+
+
+        private void Limitorder(double entry, double stop, double target)
+        {
+
+            //var digit = (int)(Math.Log10(Symbol.PipSize) - Math.Log10(Symbol.TickSize));
+            //Print("calculationg didi",digit);
+            //var stopPips = Math.Round(Math.Abs(entry - stop) / Symbol.PipSize, digit);
+            var stopPips = Math.Round(Math.Abs(entry - stop) / Symbol.PipSize, 2);
+            //Print("pip sise ",stopPips);
+            double targetPips;
+            if (target != 0)
+            {
+                targetPips = Math.Round(Math.Abs(entry - target) / Symbol.PipSize, 2);
+            }
+            else { targetPips = stopPips * 5; }
+            var volume = Volum(stopPips);
+
+            if (stop < entry)
+            {
+                if (Symbol.Ask > entry) { PlaceLimitOrder(TradeType.Buy, SymbolName, volume, entry, "", stopPips, targetPips); }
+                else { PlaceStopOrder(TradeType.Buy, SymbolName, volume, entry, "", stopPips, targetPips); }
+
+            }
+            else if (stop > entry)
+            {
+                if (Symbol.Bid < entry) { PlaceLimitOrder(TradeType.Sell, SymbolName, volume, entry, "", stopPips, targetPips); }
+                else { PlaceStopOrder(TradeType.Sell, SymbolName, volume, entry, "", stopPips, targetPips); }
+            }
+            else { }
+
+        }
+
+
+        private void Marketorder(double stop, double target)
+        {
+            //var digit = (int)(Math.Log10(Symbol.PipSize) - Math.Log10(Symbol.TickSize));
+            double stopPips;
+            double targetPips;
+            double rr;
+            TradeType tt;
+
+            if (stop != 0 && Symbol.Ask < stop && Symbol.Bid < stop)
+            { stopPips = Math.Round(Math.Abs(stop - Symbol.Bid) / Symbol.PipSize, 2); tt = TradeType.Sell; rr = Symbol.Bid; }
+            else { stopPips = Math.Round(Math.Abs(Symbol.Ask - stop) / Symbol.PipSize, 2); tt = TradeType.Buy; rr = Symbol.Ask; }
+
+
+            if (target != 0 && Symbol.Ask < target && Symbol.Bid < target)
+            { targetPips = Math.Round(Math.Abs(target - Symbol.Bid) / Symbol.PipSize, 2); }
+            else { targetPips = Math.Round(Math.Abs(Symbol.Ask - target) / Symbol.PipSize, 2); }
+
+            if (target == 0) { targetPips = stopPips * 5; }
+
+            var volume = Volum(stopPips);
+
+
+
+            ExecuteMarketRangeOrder(tt, SymbolName, volume, 4, rr, "", stopPips, targetPips);
+        }
+
+
+        private void Removeobject()
+        {
+            Stopline.Y = 0;
+            Stopline.Color = Color.Red;
+            stop = 0;
+
+            Priceline.Y = 0;
+            Priceline.Color = Color.Blue;
+            Entry = 0;
+
+            Targetline.Y = 0;
+            target = 0;
+
+            if (Chart.FindObject("E_lin") != null) { Chart.RemoveObject("E_lin"); }
+            if (Chart.FindObject("S_lin") != null) { Chart.RemoveObject("S_lin"); }
+            if (Chart.FindObject("T_lin") != null) { Chart.RemoveObject("T_lin"); }
+            RR=false; 
+
+            if (IsInSync > 0) return;
+            SyncVariableAcrossCharts();
+        }
+
+        private void RemoveLobject()
+        {
+            Priceline.Y = 0;
+            Priceline.Color = Color.Blue;
+            Entry = 0;
+
+            L1.Y = 0; L2.Y = 0; LL1 = 0; LL2 = 0;
+            
+            if (Chart.FindObject("E_lin") != null) { Chart.RemoveObject("E_lin"); }
+
+            if (IsInSync > 0) return;
+            SyncVariableAcrossCharts();
+
+        }
+
+
+
+
+        private void ChartOnMouseMove(ChartMouseEventArgs obj)
+        {
+
+            //price = TruncateDecimalDigits(obj.YValue);
+            price = Math.Round(obj.YValue, Symbol.Digits);
+            //Print("mouse move y value ",obj.YValue);
+
+            //
+        }
+        /*double TruncateDecimalDigits(double value)
+        {
+
+            string valueStr = ((decimal)Symbol.TickSize).ToString();
+            int decimalIndex = valueStr.IndexOf('.');
+            int d = decimalIndex == -1 ? 0 : valueStr.Length - decimalIndex - 1;
+            double factor = Math.Pow(10, d);
+            double truncatedValue = Math.Truncate(value * factor) / factor;
+            return truncatedValue;
+
+        } */
+
+        private void Drawprice()
+        {
+            if (price > 0)
+            {
+                Priceline.Y = price;
+                Entry = price;
+
+                if (IsInSync > 0) return;
+                SyncVariableAcrossCharts();
+
+                // Print("Entry ",Entry);
+            }
+
+        }
+
+        private void Drawstop()
+        {
+            if (price > 0)
+            {
+                Stopline.Y = price;
+                stop = price;
+
+                if (IsInSync > 0) return;
+                SyncVariableAcrossCharts();
+
+                //  Print("sl ",stop);
+            }
+
+        }
+        private void Drawtarget()
+        {
+            if (price > 0)
+            {
+                Targetline.Y = price;
+                target = price;
+
+
+                if (IsInSync > 0) return;
+                SyncVariableAcrossCharts();
+                //  Print("target ",target);
+            }
+        }
+
+
+
+        void OnChartMouseDown(ChartMouseEventArgs obj)
+        {           
+
+            if (!obj.AltKey && !obj.CtrlKey && obj.ShiftKey)
+                CancelClosestOrder(obj.YValue);
+
+            if (obj.AltKey && obj.CtrlKey && !obj.ShiftKey)
+                CloseClosestPosition(obj.YValue);
+            
+            if (obj.AltKey && obj.CtrlKey && obj.ShiftKey)
+                ReversePosition();
+                
+            if (!obj.AltKey && obj.CtrlKey && !obj.ShiftKey)
+                BKPosition();
+
+
+        }
+
+        private void CloseClosestPosition(double price)
+        {
+            if (Positions.Count == 0)
+            { return; }
+            Position pos = Positions[0];
+            foreach (var _pos in Positions)
+            {
+                if (Math.Abs(price - _pos.EntryPrice) < Math.Abs(price - pos.EntryPrice))
+                    pos = _pos;
+            }
+            ClosePosition(pos);
+        }
+        
+        private void ReversePosition()
+        {
+            if (Positions.Count == 1)
+            {
+              Positions[0].Reverse();
+              if(Positions[0].TradeType == TradeType.Buy) Positions[0].ModifyStopLossPrice(Positions[0].EntryPrice - (Symbol.Ask - Symbol.Bid)*3 );
+              else  Positions[0].ModifyStopLossPrice(Positions[0].EntryPrice + (Symbol.Ask - Symbol.Bid)*3 );
+            
+            }
+        }
+        
+        private void BKPosition()
+        {  
+           if (Positions.Count == 0)
+            { return; }
+            Position pos = Positions[0];
+            foreach (var _pos in Positions)
+            {
+                if (Math.Abs(price - _pos.EntryPrice) < Math.Abs(price - pos.EntryPrice))
+                    pos = _pos;
+            }
+              if(pos.NetProfit > 0){
+              if(pos.TradeType == TradeType.Sell) pos.ModifyStopLossPrice(pos.EntryPrice - (Symbol.Ask - Symbol.Bid)/6 );
+              else  pos.ModifyStopLossPrice(pos.EntryPrice + (Symbol.Ask - Symbol.Bid)/6 );
+              }
+         }
+       
+
+        private void CancelClosestOrder(double price)
+        {
+            if (PendingOrders.Count == 0)
+            { return; }
+            PendingOrder ord = PendingOrders[0];
+            foreach (var _ord in PendingOrders)
+            {
+                if (Math.Abs(price - _ord.TargetPrice) < Math.Abs(price - ord.TargetPrice))
+                    ord = _ord;
+            }
+            CancelPendingOrder(ord);
+        }
+
+
+        private void Line_color_Change()
+        {
+            if (Entry != 0 && stop != 0)
+            {
+                if (Priceline.Color == "Blue" && Stopline.Color == "Red")
+                {
+                    Priceline.Color = "SkyBlue";
+                    Stopline.Color = "Orange";
+                }
+                else
+                {
+                    Priceline.Color = "Blue";
+                    Stopline.Color = "Red";
+                }
+            }
+        }
+
+        private void Optimie_Limit()
+        {
+            if (Entry != 0 && stop != 0)
+            {
+                if (Entry > stop)
+                {
+                    if (!((Entry) < Symbol.Bid) || !(Entry < Symbol.Ask))
+                    {
+                        Marketorder(stop, target);
+                        Removeobject();
+                    }
+                }
+
+                if (Entry < stop)
+                {
+                    if (!((Entry) > Symbol.Bid) || !(Entry > Symbol.Ask))
+                    {
+                        Marketorder(stop, target);
+                        Removeobject();
+                    }
+                }
+            }
+
+        }
+        
+        private void SelectedObjSync()
+        {
+            foreach(var ob in Chart.SelectedObjects)
+            {
+                if ( ob.ObjectType == ChartObjectType.Rectangle )
+                {
+                    var rect = ob as ChartRectangle; LL1=rect.Y1; LL2=rect.Y2;
+                }
+                if ( ob.ObjectType == ChartObjectType.TrendLine )
+                {
+                    var trend = ob as ChartTrendLine; LL1=trend.Y1; LL2=trend.Y2;
+                }
+            }
+            
+            if (IsInSync > 0) return;
+            SyncVariableAcrossCharts();
+            
+        }
+
+        public override void Calculate(int index)
+        {
+            Sec.Y = Symbol.Bid;
+            Sec.Time = TimeInUtc;
+            if (AlertY > 0)
+            {
+                if ((Math.Abs(Symbol.Ask - AlertY) <= 5 * Symbol.PipSize || Math.Abs(Symbol.Bid - AlertY) <= 5 * Symbol.PipSize) && !soundPlayed)
+                {
+                    Notifications.PlaySound(@"C:\Users\A\Documents\cAlgo\Sounds\alert2.wav");
+                    //  Notifications.SendEmail("ashokselvaj@email.com", "ashokselvaj@email.com", Symbol.Name+" Price Alert "+AlertY.ToString("0.000"), "Reached");
+                    Notifications.SendEmail("ashokselvaj@email.com", "irumbukaisignal@gmail.com", Symbol.Name + " PriceAlert " + AlertY.ToString("0.000"), "Reached");
+                    //Notifications.SendEmail("ashokselvaj@email.com", "bulparaj2@gmail.com", Symbol.Name+" Price Alert "+AlertY.ToString("0.000"), "Reached");
+                    soundPlayed = true;
+                }
+            }
+
+            if (Dash)
+            { //not work on tick 5 
+                if (Positions.Count > 0 || stop != 0)
+                {  //tick stop when no need            
+                    if (Priceline != null && Stopline != null)
+                    {
+                        if (Priceline.Color == "SkyBlue" && Stopline.Color == "Orange") { Optimie_Limit(); }
+                    }
+
+                    double stopPips = 100;
+                    double stopPip = 0;
+                    double cumulativeProfit = 0;
+                    double negative_profit = 0;
+                    double today_profit = 0;
+                    //var digit = (int)(Math.Log10(Symbol.PipSize) - Math.Log10(Symbol.TickSize));
+
+                    if (Entry != 0 && stop != 0)
+                    {
+                        stopPip = Math.Round(Math.Abs(Entry - stop) / Symbol.PipSize, 2);
+
+                    }
+                    else if (Entry == 0 && stop != 0)
+                    {
+                        if (Symbol.Ask < stop && Symbol.Bid < stop)
+                        {
+                            //stopPip = Math.Round(Math.Abs(Symbol.Bid - (stop + Symbol.TickSize)) / Symbol.PipSize, 2);
+                            stopPip = Math.Round(Math.Abs(Symbol.Bid - stop) / Symbol.PipSize, 2);
+
+                        }
+                        else
+                        { //stopPip = Math.Round(Math.Abs(Symbol.Ask - (stop + Symbol.TickSize)) / Symbol.PipSize, 2); }
+                            stopPip = Math.Round(Math.Abs(Symbol.Ask - stop) / Symbol.PipSize, 2);
+                        }
+                    }
+
+                    if (stopPip != 0) { stopPips = stopPip; } else { }
+
+                    var volume = Volum(stopPips);
+
+
+                    foreach (var position in Positions)
+                    {
+                        cumulativeProfit += position.NetProfit;
+                        if (position.NetProfit < 0)
+                        {
+                            negative_profit += position.NetProfit;
+
+                        }
+                    }
+
+                    string daily_t;
+                    int total_trade = -1;
+                    double ltp = 0;
+                    double trade_result = 0;
+
+                    foreach (var trade in History)
+                    {
+                        trade_result += trade.NetProfit;
+                        total_trade += 1;
+                        if (DateTime.UtcNow.Date < trade.ClosingTime)
+                        {
+                            today_profit += trade.NetProfit;
+                            if (trade.NetProfit < 0)
+                            {
+                                negative_profit += trade.NetProfit;
+                            }
+                        }
+                    }
+                    if (!(total_trade < 0))
+                    {
+                        ltp = History[total_trade].NetProfit;
+                    }
+
+                  
+                    
+                    if ( (Account.Balance - today_profit)*(-0.02)  > today_profit)
+                    {
+                        daily_t = "Daily Draw Warning 2% down from starting today";
+                    }
+                    
+                    else if ((Account.Balance - today_profit) * 0.04 < Math.Abs(negative_profit))
+                    {
+                        daily_t = "Daily Draw Warning Gross 4% Loss today";
+                    }
+                    
+                    else { daily_t = ""; }
+
+                    Dstring = daily_t;
+                    if(Last_balance != Account.Balance) Last_balance = Account.Balance;
+
+                   // DashT.Text = "" + Symbol.VolumeInUnitsToQuantity(volume).ToString("0.00") + "__" + stopPips.ToString() + "__" + (Symbol.Spread / Symbol.PipValue).ToString("0.0") + "\n" + (Math.Floor(trade_result + cumulativeProfit) / Ac_s).ToString(".0") + (Account.Balance-Last_balance).ToString("0") + "__" + (cumulativeProfit / Ac_s).ToString(".0");
+                    //Chart.DrawStaticText("Dashboard",""+Symbol.VolumeInUnitsToQuantity(volume).ToString("0.00") + "__"+stopPips.ToString() +"__" + (Symbol.Spread / Symbol.PipValue).ToString("0.0") +  "\n" + (Math.Floor(trade_result + cumulativeProfit)/Ac_s).ToString(".00") +Last_trade+"__" + (cumulativeProfit/Ac_s).ToString(".00") , VerticalAlignment.Top, HorizontalAlignment.Left, Color.Gray );
+                    DashD.Text = "\n" + "\n" + "" + daily_t;
+                    //Chart.DrawStaticText("Daily", "\n" + "\n"  + "" + daily_t, VerticalAlignment.Top, HorizontalAlignment.Left, Color.Gray); 
+                    
+                    if(Positions.Count > 0)  Sec.Text = ""+secc+" ["+ cumulativeProfit.ToString("0")+"_"+(Account.Equity-(Ac_s*100)).ToString("0")+"_"+((Account.Equity/Ac_s)-100).ToString("0.0")+"_"+(cumulativeProfit/(Positions.Count*Account.Balance*RP*0.01)).ToString("0.0")+"]";
+                    else  Sec.Text = ""+secc+" ["+ Symbol.VolumeInUnitsToQuantity(volume).ToString("0.00")+"_"+stopPips.ToString()+"]";
+
+
+                }//tick stop when no needed
+                else
+                {
+                    
+                    Sec.Text = ""+secc;
+                    DashT.Text = "" + RP + "__" + (Symbol.Spread / Symbol.PipValue).ToString("0.0") + "\n" + (Account.Balance / Ac_s - 100).ToString("0.0") +"__"+ (Account.Balance-Last_balance).ToString("0") + "\n" + Dstring;
+                    //Chart.DrawStaticText("Dashboard",""+RP+"__"+ (Symbol.Spread / Symbol.PipValue).ToString("0.0")+"\n"+(Account.Balance/Ac_s - 100).ToString(".00")+"\n"+Dstring, VerticalAlignment.Top, HorizontalAlignment.Left, Color.Gray);     
+                }
+            }//tick enable
+        }
+
+
+
+        //  protected override void Dispose(bool disposing)
+        //{
+        //    Chart.MouseMove -= ChartOnMouseMove;
+
+        //}
+    }
+}
