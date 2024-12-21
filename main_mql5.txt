@@ -1,0 +1,1150 @@
+//+------------------------------------------------------------------+
+//|                                                           aa.mq5 |
+//|                                  Copyright 2024, MetaQuotes Ltd. |
+//|                                             https://www.mql5.com |
+//+------------------------------------------------------------------+
+#import "user32.dll"
+int GetKeyState(int vKey);
+#import
+
+// User variables
+input double Risk_Percentage  = 0.35;
+//input double SL               = 100;
+//input double TP               = 500;
+input double AC_I             = 6000;
+//input double MaxLot           = 7;
+
+
+// Global variables
+double price = 0.0;  // Variable to store the price
+double entry_p = 0.0; // Variable to store the Entry price
+double Sl_p = 0.0; // Variable to store the Sl price
+double Tp_p = 0.0; // Variable to store the Tp price
+string Dstring=".";
+string LastTrade_St;
+double Prev_ac = AC_I;
+//double Risk_Percentage  = 1;
+//key_flag
+bool alt = false;
+bool ctrl = false;
+bool shift = false;
+bool z   = false;
+//bool tickFlag = true;
+
+
+MqlTradeRequest request;
+MqlTradeResult result;
+
+// Function declarations
+double GetPriceFromMousePosition(int x, int y);
+void CreateTextLabel(string labelName,string text,color textColor = clrBlack, int fontSize = 12, int xDistance = 100, int yDistance = 100, int corner = 2);
+void RemoveLine();
+void RemovePLine();
+void LineColorChange();
+double Volum(double Sl);
+void MarketRangeOrder(int tt, double vol, string sym, int rr, double entry_price, double SL_price,double TP_price);
+void LimitRangeOrder(int tt, double vol, string sym, int rr, double entry_price, double SL_price,double TP_price);
+void MarketOrder(double st,double tg);
+void LimitOrder(double et, double st, double tg);
+void Order_Space();
+void CloseClosestPosition(double p);
+void CancelClosestOrder(double p);
+void Optime_limit();
+void key_flag();
+void SingleKeyDown(long lparam);
+void CombineKeyDown(double yp);
+
+
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+
+int OnInit();  // Declaration of OnInit
+void OnDeinit(const int reason);  // Declaration of OnDeinit
+void OnTick();  // Declaration of OnTick
+void OnTimer(); 
+void OnChartEvent(const int id, const long& lparam, const double& dparam, const string& sparam);  // Declaration of OnChartEvent
+
+
+//+------------------------------------------------------------------+
+//| Function to get price from mouse coordinates                     |
+//+------------------------------------------------------------------+
+
+double GetPriceFromMousePosition(int x, int y)
+  {
+   double p;
+   int window;
+   datetime dt;
+
+// Convert the X and Y coordinates to the corresponding time and price
+   if(ChartXYToTimePrice(0, x, y, window, dt, p))
+     {
+         //Print("Price move ",p);
+     }
+   return p;
+  }
+    
+//+------------------------------------------------------------------+
+//| Create TEXT Lable                                                |
+//+------------------------------------------------------------------+
+
+void CreateTextLabel(string labelName,string text,color textColor = clrBlack, int fontSize = 12, int xDistance = 100, int yDistance = 100, int corner = 2)
+
+  {
+   if(ObjectFind(0, labelName) != -1)
+     {
+      ObjectDelete(0, labelName);
+     }
+   ObjectCreate(0, labelName, OBJ_LABEL, 0, 0, 0);
+// Set label property
+   ObjectSetString(0, labelName, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, labelName, OBJPROP_COLOR, textColor);
+   ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, fontSize);
+
+// Set the label position
+   ObjectSetInteger(0, labelName, OBJPROP_XDISTANCE, xDistance); // Distance from the right side of the chart
+   ObjectSetInteger(0, labelName, OBJPROP_YDISTANCE, yDistance); // Distance from the bottom of the chart
+
+// Align the label to the specified corner
+   ObjectSetInteger(0, labelName, OBJPROP_CORNER, corner);
+  }
+
+
+//+------------------------------------------------------------------+
+//| Remove all 3 line                                                |
+//+------------------------------------------------------------------+
+
+void RemoveLine()
+  {
+    ObjectSetDouble(0, "et", OBJPROP_PRICE, 0);
+    ObjectSetDouble(0, "sl", OBJPROP_PRICE, 0);
+    ObjectSetDouble(0, "tp", OBJPROP_PRICE, 0);
+    ObjectSetInteger(0, "et", OBJPROP_COLOR, clrBlue);
+    ObjectSetInteger(0, "sl", OBJPROP_COLOR, clrRed);
+    
+    entry_p = 0.0;  Sl_p = 0.0;   Tp_p = 0.0; 
+  }
+
+//+------------------------------------------------------------------+
+//| Remove price line                                                |
+//+------------------------------------------------------------------+
+
+void RemovePLine()
+  {
+   ObjectSetDouble(0,"et", OBJPROP_PRICE, 0);
+   ObjectSetInteger(0, "et", OBJPROP_COLOR, clrBlue);
+   ObjectSetInteger(0, "sl", OBJPROP_COLOR, clrRed);	
+   
+   entry_p = 0.0;
+        
+  }
+
+//+------------------------------------------------------------------+
+//| Line color Change for optime entry                               |
+//+------------------------------------------------------------------+
+
+void LineColorChange()
+  {
+   if( entry_p > 0 &&  Sl_p > 0 )
+     {
+      long E_clr = ObjectGetInteger(0,"et",OBJPROP_COLOR);
+      long Sl_clr = ObjectGetInteger(0,"sl",OBJPROP_COLOR);
+
+      if(E_clr == clrBlue && Sl_clr == clrRed)
+        {
+         ObjectSetInteger(0, "et", OBJPROP_COLOR, clrSkyBlue);
+         ObjectSetInteger(0, "sl", OBJPROP_COLOR, clrOrange);
+        }
+      else
+        {
+         ObjectSetInteger(0, "et", OBJPROP_COLOR, clrBlue);
+         ObjectSetInteger(0, "sl", OBJPROP_COLOR, clrRed);
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Volume Calculation                                               |
+//+------------------------------------------------------------------+
+
+double Volum(double Sl)
+  {   
+         double lots_maximum = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_MAX);
+         double lots_minimum = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_MIN);
+         double volume_step = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_STEP);
+         double tick_size = SymbolInfoDouble(Symbol(), SYMBOL_TRADE_TICK_SIZE);
+         double tick_value = SymbolInfoDouble(Symbol(), SYMBOL_TRADE_TICK_VALUE);         
+        
+         // Get trade basic info
+         double available_capital = fmin( fmin( AccountInfoDouble(ACCOUNT_EQUITY), AccountInfoDouble(ACCOUNT_BALANCE)), AccountInfoDouble(ACCOUNT_MARGIN_FREE));
+         double amount_to_risk = available_capital * Risk_Percentage/100;         
+         
+         // Calculate steps and lots
+         double money_step = MathAbs(Sl) / tick_size * tick_value * volume_step;
+         double lots = fmin( lots_maximum, fmax(lots_minimum, NormalizeDouble(amount_to_risk / money_step * volume_step, 2))); // The number 2 is due to my brokers volume step, depends on the currency pair
+         return(lots);  
+
+  }
+  
+  /*double Volumf(double Sl)
+  {
+// Calculate permissible loss, which is 35% of account balance
+   int permittableLoss = (int)MathFloor((AccountInfoDouble(ACCOUNT_BALANCE) * Risk_Percentage) / 100);
+   
+
+// Calculate the volume based on SL and symbol's pip value
+   double vol = (permittableLoss / (Sl * SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE) * SymbolInfoDouble(_Symbol,SYMBOL_TRADE_CONTRACT_SIZE) ));
+   
+// Normalize the volume
+   vol = NormalizeDouble(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN) * MathFloor(vol / SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN)), 2);
+   
+// Check if volume is less than minimum allowed volume
+   if(vol < 0.01)
+      vol = 0.01;
+
+// Check if volume exceeds the maximum allowed volume (Mx)
+   if(vol > MaxLot)
+      vol = MaxLot;
+   return vol;
+}*/
+//+------------------------------------------------------------------+
+//| Execute Market Range Order					     |
+//+------------------------------------------------------------------+
+
+void MarketRangeOrder(int tt, double vol, string sym, int rr, double entry_price, double SL_price,double TP_price)
+  {
+
+   ZeroMemory(request);
+
+   request.action    = TRADE_ACTION_DEAL;
+   request.price     = entry_price;
+   request.type      = (ENUM_ORDER_TYPE)tt;
+   request.symbol    = sym;
+   request.volume    = vol;
+   request.deviation = rr;
+   request.sl        = SL_price;
+   request.tp        = TP_price;
+   request.magic     = 123456;
+   Print(tt," ",vol," ",sym," ",rr," ",entry_price," ",SL_price," ",TP_price);
+   if(OrderSend(request, result))
+     {
+      Print("Market Range Order placed successfully. Ticket: ", result.order);
+     }
+   else
+     {
+      Print("Error placing Market Range Order. Error: ", GetLastError());
+     }
+  }
+
+//+------------------------------------------------------------------+
+//|Limit Range Order                                                 |
+//+------------------------------------------------------------------+
+
+void LimitRangeOrder(int tt, double vol, string sym, int rr, double entry_price, double SL_price,double TP_price)
+  {
+
+   ZeroMemory(request);
+
+   request.action    = TRADE_ACTION_PENDING;
+   request.price     = entry_price;
+   request.type      = (ENUM_ORDER_TYPE)tt;
+   request.symbol    = sym;
+   request.volume    = vol;
+   request.deviation = rr;
+   request.sl        = SL_price;
+   request.tp        = TP_price;
+   request.magic     = 123456;
+   Print(tt," ",vol," ",sym," ",rr," ",entry_price," ",SL_price," ",TP_price);
+   if(OrderSend(request, result))
+     {
+      Print("Limit Range Order placed successfully. Ticket: ", result.order);
+     }
+   else
+     {
+      Print("Error placing Limit Range Order. Error: ", GetLastError());
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Market Order Execution                                           |
+//+------------------------------------------------------------------+
+
+void MarketOrder(double st, double tg)
+  {
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   
+
+
+
+
+   if(st != 0 && ask < st && bid < st) //sell market order
+     {
+     double Stoppip  = st-bid;
+      if(tg == 0)
+        {
+         tg = NormalizeDouble(bid - (st - bid) * 5, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
+        }
+
+      MarketRangeOrder(1,Volum(Stoppip),_Symbol,4,bid,st,tg);
+     }
+
+   if(st != 0 && ask > st && bid > st) //buy market order
+     {
+      double Stoppip  = (ask-st);
+      if(tg == 0)
+        {
+        tg = NormalizeDouble(ask + ((ask-st)*5), (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
+        }
+
+      MarketRangeOrder(0,Volum(Stoppip),_Symbol,4,ask,st,tg);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Limit Order Execution                                            |
+//+------------------------------------------------------------------+
+
+void LimitOrder(double et, double st, double tg)
+  {
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double pipz = SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
+
+
+
+   if(st < et)  //buy
+     {
+      double Stoppip  = (et-st);
+      double v = Volum(Stoppip);
+      if(tg == 0)
+        {
+        tg = NormalizeDouble(et + ((et-st)*5), (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
+        }
+      if(ask > et)
+        {
+         LimitRangeOrder(2,v,_Symbol,4,et,st,tg); //buy limit
+        }
+      else
+        {
+         LimitRangeOrder(4,v,_Symbol,4,et,st,tg); //buy stop
+        }
+     }
+   else    //sell
+     {
+      double Stoppip  = (st-et);
+      double v = Volum(Stoppip);
+      if(tg == 0)
+        {
+        tg = NormalizeDouble(et - ((st-et)*5), (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
+        }
+
+      if(bid < et)
+        {
+         LimitRangeOrder(3,v,_Symbol,4,et,st,tg); //sell limit
+        }
+      else
+        {
+         LimitRangeOrder(5,v,_Symbol,4,et,st,tg); //sell stop
+        }
+     }
+
+  }
+
+//+------------------------------------------------------------------+
+//| Line Order Execute                                               |
+//+------------------------------------------------------------------+
+
+void Order_Space()
+  {
+   if(Sl_p != 0 && entry_p != 0 && Tp_p != 0)
+     {
+      LimitOrder(entry_p, Sl_p, Tp_p);
+      RemoveLine();
+
+     }
+   else
+      if(Sl_p != 0 && entry_p != 0 && Tp_p == 0)
+        {
+         LimitOrder(entry_p, Sl_p, Tp_p);
+         RemoveLine();
+        }
+      else
+         if(Sl_p != 0 && entry_p == 0 && Tp_p != 0)
+           {
+            MarketOrder(Sl_p,Tp_p);
+            RemoveLine();
+           }
+         else
+            if(Sl_p != 0 && entry_p == 0 && Tp_p == 0)
+              {
+               MarketOrder(Sl_p,Tp_p);
+               RemoveLine();
+              }
+            else
+              {
+               RemoveLine();
+              }
+  }
+//+------------------------------------------------------------------+
+//| reverse position                                                   |
+//+------------------------------------------------------------------+
+
+void RClosestPosition(double p)
+  {
+// First, ensure there are open positions
+   int totalPositions = PositionsTotal();
+   if(totalPositions == 0)
+     {
+      Print("No open positions to close.");
+      return;
+     }
+
+
+   ulong pos = PositionGetTicket(0);
+   ulong ipos;
+   double pos_p=0;
+   double ipos_p=0;
+
+// Loop through all open positions
+   for(int i = 0; i < totalPositions; i++)
+     {
+      ipos = PositionGetTicket(i);
+      if(PositionSelectByTicket(pos))
+        { pos_p = PositionGetDouble(POSITION_PRICE_OPEN); }
+
+      if(PositionSelectByTicket(ipos))
+        { ipos_p = PositionGetDouble(POSITION_PRICE_OPEN); }
+
+      // Find the closest position to the clicked price
+      if(MathAbs(p - ipos_p) < MathAbs(p - pos_p))
+        { pos = ipos; }
+     }
+
+// If a valid closest position is found, close it
+   if(pos != -1 && PositionSelectByTicket(pos))
+     {
+      // Get position details
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      long direction = PositionGetInteger(POSITION_TYPE);
+      double closePrice = (direction == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);
+      
+    
+
+      MqlTradeRequest localRequest;
+      MqlTradeResult localResult;
+      ZeroMemory(localRequest);
+      ZeroMemory(localResult);
+ 
+      localRequest.action = TRADE_ACTION_DEAL; 
+      localRequest.symbol = symbol;
+      localRequest.volume = volume;
+      localRequest.type = (direction == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+      localRequest.price = closePrice;
+      localRequest.deviation = 4;
+      localRequest.position = pos;
+      
+      
+      
+      if(OrderSend(localRequest, localResult))
+        {
+         Print("Position Closed R successfully. Ticket: ", localResult.order);
+         
+         double gap =  MathAbs(SymbolInfoDouble(_Symbol,SYMBOL_ASK) - SymbolInfoDouble(_Symbol,SYMBOL_BID));
+         
+         if (gap > 0) {
+         
+         double stop = (direction == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol,SYMBOL_ASK)+(gap*2) : SymbolInfoDouble(_Symbol,SYMBOL_BID)-(gap*2);
+         
+         
+         MqlTradeRequest lRequest;
+         MqlTradeResult lResult;
+         ZeroMemory(lRequest);
+         ZeroMemory(lResult);
+ 
+         lRequest.action = TRADE_ACTION_DEAL; 
+         lRequest.symbol = symbol;
+         lRequest.volume = volume;
+         lRequest.type = (direction == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+         lRequest.price = (direction == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol,SYMBOL_BID) : SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+         lRequest.deviation = 4;
+         lRequest.sl   = stop;
+         lRequest.magic = 123456;      
+         if(OrderSend(lRequest, lResult))  Print("Position Reversed successfully. Ticket: ", lResult.order);
+         
+         
+         }
+        }
+      else
+        {
+         Print("Failed to reverse position. Error: ", GetLastError());
+        }
+     }
+   else
+     {
+      Print("No position found reverse to the given price.");
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| close position                                                   |
+//+------------------------------------------------------------------+
+
+void CloseClosestPosition(double p)
+  {
+// First, ensure there are open positions
+   int totalPositions = PositionsTotal();
+   if(totalPositions == 0)
+     {
+      Print("No open positions to close.");
+      return;
+     }
+
+
+   ulong pos = PositionGetTicket(0);
+   ulong ipos;
+   double pos_p=0;
+   double ipos_p=0;
+
+// Loop through all open positions
+   for(int i = 0; i < totalPositions; i++)
+     {
+      ipos = PositionGetTicket(i);
+      if(PositionSelectByTicket(pos))
+        { pos_p = PositionGetDouble(POSITION_PRICE_OPEN); }
+
+      if(PositionSelectByTicket(ipos))
+        { ipos_p = PositionGetDouble(POSITION_PRICE_OPEN); }
+
+      // Find the closest position to the clicked price
+      if(MathAbs(p - ipos_p) < MathAbs(p - pos_p))
+        { pos = ipos; }
+     }
+
+// If a valid closest position is found, close it
+   if(pos != -1 && PositionSelectByTicket(pos))
+     {
+      // Get position details
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      long direction = PositionGetInteger(POSITION_TYPE);
+      double closePrice = (direction == POSITION_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID) : SymbolInfoDouble(symbol, SYMBOL_ASK);
+      
+    
+
+      MqlTradeRequest localRequest;
+      MqlTradeResult localResult;
+      ZeroMemory(localRequest);
+      ZeroMemory(localResult);
+
+      localRequest.action = TRADE_ACTION_DEAL;
+      localRequest.symbol = symbol;
+      localRequest.volume = volume;
+      localRequest.type = (direction == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+      localRequest.price = closePrice;
+      localRequest.deviation = 4;
+      localRequest.position = pos;
+      
+      
+      
+      if(OrderSend(localRequest, localResult))
+        {
+         Print("Position closed successfully. Ticket: ", localResult.order);
+        }
+      else
+        {
+         Print("Failed to close position. Error: ", GetLastError());
+        }
+     }
+   else
+     {
+      Print("No position found close to the given price.");
+     }
+  }
+
+
+//+------------------------------------------------------------------+
+//| Breakeven position                                               |
+//+------------------------------------------------------------------+
+
+void BKClosestPosition(double p)
+  {
+// First, ensure there are open positions
+   int totalPositions = PositionsTotal();
+   if(totalPositions == 0)
+     {
+      Print("No open positions to close.");
+      return;
+     }
+
+
+   ulong pos = PositionGetTicket(0);
+   ulong ipos;
+   double pos_p=0;
+   double ipos_p=0;
+
+// Loop through all open positions
+   for(int i = 0; i < totalPositions; i++)
+     {
+      ipos = PositionGetTicket(i);
+      if(PositionSelectByTicket(pos))
+        { pos_p = PositionGetDouble(POSITION_PRICE_OPEN); }
+
+      if(PositionSelectByTicket(ipos))
+        { ipos_p = PositionGetDouble(POSITION_PRICE_OPEN); }
+
+      // Find the closest position to the clicked price
+      if(MathAbs(p - ipos_p) < MathAbs(p - pos_p))
+        { pos = ipos; }
+     }
+
+// If a valid closest position is found, close it
+   if(pos != -1 && PositionSelectByTicket(pos))
+     {
+      // Get position details
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      long direction = PositionGetInteger(POSITION_TYPE);
+      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double stopLoss = PositionGetDouble(POSITION_SL);
+      
+      
+      if (stopLoss != entryPrice)  
+    {
+      MqlTradeRequest localRequest;
+      MqlTradeResult localResult;
+      ZeroMemory(localRequest);
+      ZeroMemory(localResult);
+
+      localRequest.action = TRADE_ACTION_SLTP;
+      localRequest.symbol = symbol;
+      localRequest.position = pos;
+      localRequest.sl = entryPrice;
+      
+      
+      
+      if(OrderSend(localRequest, localResult))
+        {
+         Print("Position BK successfully. Ticket: ", localResult.order);
+        }
+      else
+        {
+         Print("Failed to BK position. Error: ", GetLastError());
+        
+        }
+     }}
+   else
+     {
+      Print("No position found BK to the given price.");
+     } 
+  }
+  
+  
+//+------------------------------------------------------------------+
+//| Close Limit Order                                                |
+//+------------------------------------------------------------------+
+
+void CancelClosestOrder(double p)
+  {
+// Ensure there are open orders
+   int totalOrders = OrdersTotal();
+   if(totalOrders == 0)
+     {
+      Print("No pending orders available.");
+      return;
+     }
+
+   ulong pos = OrderGetTicket(0);
+   ulong ipos;
+   double pos_p=0;
+   double ipos_p=0;
+
+// Loop through all open positions
+   for(int i = 0; i < totalOrders; i++)
+     {
+      ipos = OrderGetTicket(i);
+      if(OrderSelect(pos))
+        { pos_p = OrderGetDouble(ORDER_PRICE_OPEN); }
+
+      if(OrderSelect(ipos))
+        { ipos_p = OrderGetDouble(ORDER_PRICE_OPEN); }
+
+      // Find the closest position to the clicked price
+      if(MathAbs(p - ipos_p) < MathAbs(p - pos_p))
+        { pos = ipos; }
+     }
+
+   MqlTradeRequest l_request;
+   MqlTradeResult l_result;
+
+// Fill the request structure for deleting the order
+   ZeroMemory(request);
+   ZeroMemory(result);
+   request.action = TRADE_ACTION_REMOVE;  // Action to delete the pending order
+   request.order = pos;                // Specify the ticket number of the order
+   request.symbol = OrderGetString(ORDER_SYMBOL);  // The symbol of the order
+
+// Send the trade request to delete the order
+   if(OrderSend(request, result))
+     {
+      Print("Pending order deleted successfully. Ticket: ", pos);
+     }
+   else
+     {
+      Print("Failed to delete pending order. Error: ", GetLastError());
+     }
+
+  }
+
+//+------------------------------------------------------------------+
+//| Optime limit                                                     |
+//+------------------------------------------------------------------+
+
+void Optime_limit()
+  {
+   if(entry_p != 0 && Sl_p != 0)
+     {
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      if(entry_p != 0 && Sl_p != 0)
+        {
+         if(entry_p > Sl_p)  //buy
+           {
+            if(!(entry_p < bid) || !(entry_p < ask))
+              {
+               MarketOrder(Sl_p,Tp_p);
+               RemoveLine();
+              }
+           }
+
+         if(entry_p < Sl_p)  //sell
+           {
+            if(!(entry_p > bid) || !(entry_p > ask))
+              {
+               MarketOrder(Sl_p,Tp_p);
+               RemoveLine();
+              }
+           }
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| KEY flag                                                         |
+//+------------------------------------------------------------------+
+
+void key_flag()
+  {
+   if((GetKeyState(0x12) & 0x8000) != 0)
+     {alt = true;}
+   if((GetKeyState(0x11) & 0x8000) != 0)
+     {ctrl = true;}
+   if((GetKeyState(0x10) & 0x8000) != 0)
+     {shift = true;}
+   if((GetKeyState(0x5A) & 0x8000) != 0)
+     {z = true;}
+  }
+  
+//+------------------------------------------------------------------+
+//| Single  Key Down                                                 |
+//+------------------------------------------------------------------+
+
+void SingleKeyDown(long lparam)
+{
+
+      if(lparam == 49 || lparam == 97)  // ASCII code for '1'
+        {
+         ObjectSetDouble(0, "et", OBJPROP_PRICE, price);
+         entry_p = price;
+         return;
+        }
+      if(lparam == 50 || lparam == 98)  // ASCII code for '2'
+        {
+         ObjectSetDouble(0, "sl", OBJPROP_PRICE, price);
+         Sl_p = price;
+         return;
+        }
+      if(lparam == 51 || lparam == 99)  // ASCII code for '3'
+        {
+         ObjectSetDouble(0, "tp", OBJPROP_PRICE, price);
+         Tp_p = price;
+         return;
+        }
+      if(lparam == 82 || lparam == 103)  // ASCII code for 'R' and 'N7'
+        {
+         RemoveLine();
+         return;
+        }
+      if(lparam == 84 || lparam == 105)  // ASCII code for 'T' and 'N9'
+        {
+         RemovePLine();
+         return;
+        }
+      if(lparam == 53 || lparam == 101)  // ASCII code for '5'
+        {
+         LineColorChange();
+         return;
+        }
+      if(lparam == 32 || lparam == 96)   // ASCII code for 'space'
+        {
+         Order_Space();
+         return;
+        }
+        
+        //if (lparam == 81) // ASCII code for 'q'
+            // {
+         //  Print(tickFlag); // Print the current state of tickFlag
+        //   tickFlag = !tickFlag; // Toggle tickFlag between true and false
+         // return;
+        //   }
+     
+      if(lparam != 49 && lparam != 97 && lparam != 50 && lparam != 98 && lparam != 51 && lparam != 99 && lparam != 82 && lparam != 103 && lparam != 84 && lparam != 105 && lparam != 53 && lparam != 101 && lparam != 32 && lparam != 96)
+        {key_flag();}   
+}
+
+//+------------------------------------------------------------------+
+//| Combine  Key Down                                                |
+//+------------------------------------------------------------------+
+
+void CombineKeyDown(double yp)
+{
+      /*double ask = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+      double bid = SymbolInfoDouble(_Symbol,SYMBOL_BID);
+      double v  = Volum(SL);
+      double pipz = SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
+      
+      if(!ctrl && !shift && z)    //buy limit
+        {
+         if(yp > ask)
+           {
+            LimitRangeOrder(4,v,_Symbol,4,yp, MathAbs(yp-(SL*pipz)), MathAbs(yp+(TP*pipz)));
+           }
+         else
+           {
+            LimitRangeOrder(2,v,_Symbol,4,yp, MathAbs(yp-(SL*pipz)), MathAbs(yp+(TP*pipz)));
+           }  return;
+        }
+
+      if(!alt && ctrl && !shift && z)    //sell limit
+        {
+         if(yp < bid)
+           {
+            LimitRangeOrder(5,v,_Symbol,4,yp, MathAbs(yp + (SL*pipz)), MathAbs(yp - (TP*pipz)));
+           }
+         else
+           {
+            LimitRangeOrder(3,v,_Symbol,4,yp, MathAbs(yp + (SL*pipz)), MathAbs(yp - (TP*pipz)));
+
+           }  return;
+        }
+
+      if(alt && !ctrl && shift)     //buy order
+        {
+         MarketRangeOrder(0,v,_Symbol,4,ask, MathAbs(ask - (SL*pipz)), MathAbs(ask + (TP*pipz)));
+         return;
+        }
+      if(!alt && ctrl && shift)    //sell order
+        {
+         MarketRangeOrder(1,v,_Symbol,4,bid, MathAbs(bid + (SL*pipz)), MathAbs(bid - (TP*pipz)));
+         return;
+        }*/
+      if(alt && ctrl && !shift)   //Close Position
+        {
+         CloseClosestPosition(yp);
+         return;
+        }
+      if(!alt && !ctrl && shift)   //Close Position
+        {
+         CancelClosestOrder(yp);
+         return;
+        }
+      if(!alt && ctrl && !shift)   //BK Position
+        {
+         BKClosestPosition(yp);
+         return;
+        }
+      if(alt && ctrl && shift)   //Reverse Position
+        {
+         RClosestPosition(yp);
+         return;
+        }
+      
+      
+}
+//+------------------------------------------------------------------+
+//| Chart event handling function                                    |
+//+------------------------------------------------------------------+
+
+void OnChartEvent(const int id,
+                  const long& lparam,
+                  const double& dparam,
+                  const string& sparam)
+  {
+// Handle mouse movement event to track the price
+   if(id == CHARTEVENT_MOUSE_MOVE)
+     {
+      // lparam holds the X coordinate and dparam holds the Y coordinate of the mouse
+      int x = (int)lparam;  // X position (time axis)
+      int y = (int)dparam;  // Y position (price axis)
+
+      // Call the function to get the price based on mouse position
+      price = GetPriceFromMousePosition(x, y);
+     }
+
+// Keybord shortcut
+   if(id == CHARTEVENT_KEYDOWN)
+     
+     { SingleKeyDown( lparam );  }
+     
+// Keybord + Mouse click
+   if(id == CHARTEVENT_CLICK)
+     {
+     
+      key_flag();
+      //get click price
+      int x = (int)lparam;  // X position (time axis)
+      int y = (int)dparam;
+      double yp = GetPriceFromMousePosition(x, y);
+      CombineKeyDown(yp);
+      
+
+     }
+
+   if(id == CHARTEVENT_KEYUP)
+     {
+      alt = false;
+      shift = false;
+      ctrl=false;
+      z = false;
+      
+     }
+
+  }
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+
+void OnTick()
+  {
+   
+   string se = DoubleToString( 59 - StringToInteger(StringSubstr(TimeToString(TimeCurrent(),TIME_SECONDS), 6, 2)),0 );
+   ObjectMove(0,"sb",0,TimeCurrent(),SymbolInfoDouble(_Symbol,SYMBOL_BID));
+   
+ 
+ 
+
+  if(Sl_p > 0 || PositionsTotal() > 0)
+  {   
+//Optime Order Execute
+  
+   if(entry_p != 0 && Sl_p != 0)
+     {
+      long E_clr = ObjectGetInteger(0,"et",OBJPROP_COLOR);
+      long Sl_clr = ObjectGetInteger(0,"sl",OBJPROP_COLOR);
+      if(E_clr == clrSkyBlue && Sl_clr == clrOrange)
+        {
+         Optime_limit();
+        }
+     }
+//==========================================================
+
+   double stopPips = 100;
+   double stopPip = 0;
+   double cumulativeProfit = 0;
+   double negative_profit = 0;
+   double today_profit = 0;
+   int totalPositions = PositionsTotal();
+   double ask = SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   double PipSize = SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
+   
+
+//===================volume===================================
+   if(entry_p != 0 && Sl_p != 0)
+     {
+      stopPip = MathAbs(entry_p - Sl_p);
+      
+     }
+   else
+      if(entry_p == 0 && Sl_p != 0)
+        {
+         if(ask < Sl_p && bid < Sl_p) //sell
+           {
+            stopPip = MathAbs(Sl_p - bid);
+           }
+         if(ask > Sl_p && bid > Sl_p) //buy
+           {
+            stopPip = MathAbs(ask - Sl_p);
+           }
+           
+        }
+   if(stopPip != 0)
+     {
+      stopPips = stopPip;
+     }
+   
+   double volume =Volum(stopPips);
+//========================================================
+
+   for(int i = 0; i < totalPositions; i++)
+     {
+      if(PositionSelectByTicket(PositionGetTicket(i)))
+        {
+         cumulativeProfit += PositionGetDouble(POSITION_PROFIT);
+         if(PositionGetDouble(POSITION_PROFIT) < 0)
+           {
+            negative_profit += PositionGetDouble(POSITION_PROFIT);
+           }
+        }
+
+     }
+//==================================================================
+
+   string daily_t ;
+   int total_trade = 0;
+  //ouble trade_result = 0;
+   
+
+   if(HistorySelect(0, TimeCurrent()))
+     {
+
+      for(int i = HistoryDealsTotal() - 1; i >= 1; i--)
+        {
+         ulong dealTicket = HistoryDealGetTicket(i);
+         //trade_result += HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+         total_trade += 1;
+         
+         //Print( ((TimeCurrent()-10800 ) / 86400) * 86400);
+         
+         MqlDateTime timeStruct;
+         TimeToStruct(TimeCurrent()-10800, timeStruct);
+         timeStruct.hour = 0;   timeStruct.min = 0;   timeStruct.sec = 0;
+         
+         if( StructToTime(timeStruct) < HistoryDealGetInteger(dealTicket, DEAL_TIME) )
+           {
+            today_profit += HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+            if(HistoryDealGetDouble(dealTicket, DEAL_PROFIT) < 0)
+              {
+               negative_profit += HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+              }
+           }
+        }
+     }
+
+   
+   double AC_b = AccountInfoDouble(ACCOUNT_BALANCE);
+   
+   if( (AC_b - today_profit)*0.02 < MathAbs(negative_profit) )
+     {
+      daily_t = "D!";
+     }
+   else
+     {
+      daily_t = ".";
+     }
+     Dstring = daily_t;
+     
+//========================================================
+   
+   long s = SymbolInfoInteger(Symbol(), SYMBOL_SPREAD);
+   if(Prev_ac != AccountInfoDouble(ACCOUNT_BALANCE)){ LastTrade_St = "__"+DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE)-Prev_ac,2); Prev_ac = AccountInfoDouble(ACCOUNT_BALANCE);}
+//Set Time Parameters
+   //Print("Tick ku ulla irundhu pesuran");
+   
+   //Comment("\n",DoubleToString(volume,2)+"__"+DoubleToString(stopPips,0)+"__"+DoubleToString(s, 0)+"\n"+DoubleToString(trade_result/AC_i,2)+"__"+DoubleToString(ltp/AC_i,2)+"__"+DoubleToString(cumulativeProfit/AC_i,2)+"\n"+daily_t);
+      
+   ObjectSetString(0,"d1",OBJPROP_TEXT, DoubleToString(volume,2)+"__"+DoubleToString(s, 0) );    
+   ObjectSetString(0,"d2",OBJPROP_TEXT, DoubleToString( (AC_b+cumulativeProfit)*100/AC_I-100,2)+ LastTrade_St ); 
+   ObjectSetString(0,"d3",OBJPROP_TEXT, Dstring );
+ 
+   ObjectSetString(0,"sb",OBJPROP_TEXT,"  "+se+"  ("+DoubleToString(cumulativeProfit,2)+"__"+DoubleToString((cumulativeProfit+AC_b)-AC_I ,0)+"__"+DoubleToString( (AC_b+cumulativeProfit)*100/AC_I-100,2)+")" );
+   
+  }//tickflag
+   else
+      {
+         ObjectSetString(0,"sb",OBJPROP_TEXT,"   "+se);
+         //Print(AC_i);
+         string spred = DoubleToString( SymbolInfoInteger(Symbol(), SYMBOL_SPREAD),0 ); 
+         if(AC_I > 0)
+         {
+            string ss = DoubleToString((AccountInfoDouble(ACCOUNT_BALANCE)*100/AC_I)-100,2);
+             ObjectSetString(0,"d1",OBJPROP_TEXT,DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE)*Risk_Percentage*0.01,2)+"__"+spred );        //Comment("\n","",DoubleToString(SL,0),"__",spred,"\n",ss,"__",LastTrade_St,"\n",Dstring );
+             
+             if(Prev_ac != AccountInfoDouble(ACCOUNT_BALANCE)){ LastTrade_St = "__"+DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE)-Prev_ac,2); Prev_ac = AccountInfoDouble(ACCOUNT_BALANCE);}
+             
+             ObjectSetString(0,"d2",OBJPROP_TEXT,ss+LastTrade_St ); 
+             ObjectSetString(0,"d3",OBJPROP_TEXT,Dstring );
+             
+             
+         } else { ObjectSetString(0, "d1", OBJPROP_TEXT, DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE)*Risk_Percentage*0.01,2)+"__"+spred); } //Comment("\n","",DoubleToString(SL,0),"__",spred); }
+         
+      }
+  }
+//+------------------------------------------------------------------+
+//| On timer                                                         |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   
+   
+   MqlDateTime timeStruct;
+   TimeToStruct(TimeCurrent()+12600, timeStruct);
+   int hour = timeStruct.hour % 12;
+   hour = (hour == 0) ? 12 : hour; 
+   string timeString = StringFormat("%02d:%02d", hour, timeStruct.min);
+   
+   ObjectSetString(0, "t", OBJPROP_TEXT, "{ "+timeString+" } "+TimeToString((TimeCurrent()-25200),TIME_MINUTES) );  //-25200
+   
+}
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+  {
+   
+   ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, true);
+   
+   EventSetTimer(1);
+   CreateTextLabel("t",".",8421504,9,130,80,2);
+   
+   CreateTextLabel("d1",".",8421504,9,30,30,4);
+   CreateTextLabel("d2",".",8421504,9,30,50,4);
+   CreateTextLabel("d3",".",8421504,9,30,80,4);
+   
+    if( ObjectCreate(0, "et", OBJ_HLINE, 0, TimeCurrent(),0) ) { ObjectSetInteger(0, "et", OBJPROP_COLOR, clrBlue); }
+    if( ObjectCreate(0, "sl", OBJ_HLINE, 0, TimeCurrent(),0) ) { ObjectSetInteger(0, "sl", OBJPROP_COLOR, clrRed); } 
+    if( ObjectCreate(0, "tp", OBJ_HLINE, 0, TimeCurrent(),0) ) { ObjectSetInteger(0, "tp", OBJPROP_COLOR, clrGreen); }
+    
+   if(ObjectCreate(0,"sb",OBJ_TEXT,0,TimeCurrent(),SymbolInfoDouble(_Symbol,SYMBOL_BID))) {
+   ObjectSetString(0,"sb",OBJPROP_TEXT,"   aa");
+   ObjectSetInteger(0,"sb",OBJPROP_COLOR,8421504);
+   ObjectSetInteger(0,"sb",OBJPROP_FONTSIZE,10); }
+   
+    
+    
+    
+    
+   
+   return(INIT_SUCCEEDED);
+  }
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function   			 	     |
+//+------------------------------------------------------------------+                        
+void OnDeinit(const int reason)
+  {
+      EventKillTimer();
+      ObjectDelete(0,"t");
+      ObjectDelete(0,"sb");
+      ObjectDelete(0,"d1");
+      ObjectDelete(0,"d2");
+      ObjectDelete(0,"d3");
+      ObjectDelete(0,"et");
+      ObjectDelete(0,"sl");
+      ObjectDelete(0,"tp");
+      
+      RemoveLine();
+      //Comment(" ");
+  }
